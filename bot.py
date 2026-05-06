@@ -89,43 +89,57 @@ async def download_video(url: str, filename: str) -> str:
 # ========================================
 # CONVERT TO CIRCLE
 # ========================================
-# Try this modification - add more video metadata in the FFmpeg conversion:
+
 def convert_to_circle(input_path: str, output_path: str):
     """
-    Конвертация видео в кружочек (круглое видео)
+    Конвертация видео в визуальный кружочек (MP4 + чёрный фон)
     """
-    logger.info(f"🔄 Конвертирую в кружочек...")
-    
+    logger.info(f"🔄 Создаю кружочек...")
+
     command = [
         "ffmpeg",
         "-i", input_path,
-        "-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=480:480,format=yuv420p",
-        "-c:a", "aac",
-        "-b:a", "128k",
+        "-filter_complex",
+        (
+            # Шаг 1: Кроп + ресайз + альфа-маска
+            "[0:v]"
+            "crop='min(iw,ih)':'min(iw,ih)',"
+            "scale=480:480,"
+            "format=yuva420p,"
+            "geq="
+            "lum='p(X,Y)':"
+            "cb='cb(X,Y)':"
+            "cr='cr(X,Y)':"
+            "a='if(lt(sqrt((X-240)^2+(Y-240)^2),240),255,0)'"
+            "[circle];"
+            # Шаг 2: Чёрный фон 480x480
+            "color=black:size=480x480:rate=30[bg];"
+            # Шаг 3: Накладываем кружок на фон
+            "[bg][circle]overlay"
+        ),
+        "-map", "0:a?",         # Аудио из оригинала (если есть)
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
         "-t", "60",
-        "-movflags", "+faststart",
-        "-aspect", "1:1",  # Force 1:1 aspect ratio
-        "-metadata", "comment=circle_video",  # Add metadata
         "-y",
         output_path
     ]
-    
+
     result = subprocess.run(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
     )
-    
+
     if result.returncode != 0:
-        logger.error(f"❌ FFmpeg ошибка: {result.stderr}")
-        raise Exception(f"Ошибка конвертации видео")
-    
-    file_size = os.path.getsize(output_path) / (1024 * 1024)
-    logger.info(f"✅ Кружочек готов ({file_size:.2f} MB)")
+        logger.error(f"❌ FFmpeg stderr:\n{result.stderr}")
+        raise Exception("Ошибка конвертации")
+
+    logger.info(f"✅ Кружочек готов")
 
 # ========================================
 # UPLOAD VIDEO TO MAX (ИСПРАВЛЕННАЯ ВЕРСИЯ)
@@ -144,9 +158,7 @@ async def upload_video_to_max(filepath: str):
         media = InputMedia(path=filepath, type=UploadType.VIDEO)
         
         logger.info(f"✅ InputMedia создан")
-        
-        # InputMedia автоматически загружает файл и создаёт attachment
-        # Возвращаем его напрямую для использования в send_message
+
         return media
         
     except Exception as e:
