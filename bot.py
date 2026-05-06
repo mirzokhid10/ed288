@@ -89,6 +89,7 @@ async def download_video(url: str, filename: str) -> str:
 # ========================================
 # CONVERT TO CIRCLE
 # ========================================
+# Try this modification - add more video metadata in the FFmpeg conversion:
 def convert_to_circle(input_path: str, output_path: str):
     """
     Конвертация видео в кружочек (круглое видео)
@@ -98,12 +99,16 @@ def convert_to_circle(input_path: str, output_path: str):
     command = [
         "ffmpeg",
         "-i", input_path,
-        "-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=480:480",
-        "-c:a", "copy",
+        "-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=480:480,format=yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "23",
-        "-t", "60",  # Максимум 60 секунд
+        "-t", "60",
+        "-movflags", "+faststart",
+        "-aspect", "1:1",  # Force 1:1 aspect ratio
+        "-metadata", "comment=circle_video",  # Add metadata
         "-y",
         output_path
     ]
@@ -119,9 +124,8 @@ def convert_to_circle(input_path: str, output_path: str):
         logger.error(f"❌ FFmpeg ошибка: {result.stderr}")
         raise Exception(f"Ошибка конвертации видео")
     
-    file_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
+    file_size = os.path.getsize(output_path) / (1024 * 1024)
     logger.info(f"✅ Кружочек готов ({file_size:.2f} MB)")
-
 
 # ========================================
 # UPLOAD VIDEO TO MAX (ИСПРАВЛЕННАЯ ВЕРСИЯ)
@@ -216,14 +220,44 @@ async def handle_message(event: MessageCreated):
         )
         return
 
-    # Проверяем вложения
+    # Проверяем вложения - сначала в body, потом в forwarded message
     attachments = event.message.body.attachments or []
+    
+    # Если это пересланное сообщение, берём вложения оттуда
+    if not attachments and event.message.link and event.message.link.message:
+        logger.info("🔗 Обнаружено пересланное сообщение")
+        attachments = event.message.link.message.attachments or []
 
     if not attachments:
         await event.message.answer(
             "📹 Отправь мне видео для конвертации в кружочек!"
         )
         return
+
+    # 🔍 DEBUG: Анализируем вложения
+    logger.info("=" * 60)
+    logger.info(f"🔍 АНАЛИЗ ВЛОЖЕНИЙ")
+    logger.info("=" * 60)
+    
+    for i, att in enumerate(attachments):
+        logger.info(f"\n📎 Вложение #{i + 1}:")
+        logger.info(f"   type: {att.type}")
+        
+        if hasattr(att, 'payload'):
+            logger.info(f"   📦 PAYLOAD:")
+            if hasattr(att.payload, '__dict__'):
+                for key, value in att.payload.__dict__.items():
+                    logger.info(f"      {key}: {value}")
+            
+            # Проверяем специальные поля
+            if hasattr(att, 'width'):
+                logger.info(f"   ⚠️ width: {att.width}")
+            if hasattr(att, 'height'):
+                logger.info(f"   ⚠️ height: {att.height}")
+            if hasattr(att, 'duration'):
+                logger.info(f"   ⚠️ duration: {att.duration}")
+                
+    logger.info("=" * 60)
 
     # Ищем видео
     for attachment in attachments:
@@ -252,7 +286,7 @@ async def handle_message(event: MessageCreated):
 
                 # 3. Получаем URL для загрузки
                 upload_info = await bot.get_upload_url(type=UploadType.VIDEO)
-                logger.info(f"✅ Upload URL получен: {upload_info.token}")
+                logger.info(f"✅ Upload URL получен")
                 
                 # 4. Загружаем файл
                 await bot.upload_file(
@@ -305,7 +339,6 @@ async def handle_message(event: MessageCreated):
         "❌ Отправь видео-файл!\n"
         "Форматы: MP4, MOV, AVI"
     )
-
 
 # ========================================
 # START BOT
