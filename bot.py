@@ -250,14 +250,30 @@ async def handle_message(event: MessageCreated):
                 
                 await event.message.answer("✅ Готово! Загружаю...")
 
-                # 3. Создаём InputMedia и отправляем
-                from maxapi.types import InputMedia
-                media = InputMedia(path=output_path, type=UploadType.VIDEO)
+                # 3. Получаем URL для загрузки
+                upload_info = await bot.get_upload_url(type=UploadType.VIDEO)
+                logger.info(f"✅ Upload URL получен: {upload_info.token}")
                 
-                # 4. Отправляем (используем answer вместо send_message)
+                # 4. Загружаем файл
+                await bot.upload_file(
+                    url=upload_info.url,
+                    path=output_path,
+                    type=UploadType.VIDEO
+                )
+                logger.info(f"✅ Файл загружен")
+                
+                # 5. Создаём attachment с токеном
+                from maxapi.types.attachments.upload import AttachmentUpload, AttachmentPayload
+                
+                circle_attachment = AttachmentUpload(
+                    type=UploadType.VIDEO,
+                    payload=AttachmentPayload(token=upload_info.token)
+                )
+                
+                # 6. Отправляем
                 await event.message.answer(
                     text="🎉 Вот твой кружочек!",
-                    attachments=[media]
+                    attachments=[circle_attachment]
                 )
                 
                 logger.info(f"✅ Успех! {user_name} (ID: {user_id})")
