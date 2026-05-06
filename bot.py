@@ -5,11 +5,13 @@ import aiohttp
 import subprocess
 import uuid
 import aiofiles
+import json
+from maxapi.enums.upload_type import UploadType
+
 
 from dotenv import load_dotenv
 from maxapi import Bot, Dispatcher
 from maxapi.types import BotStarted, MessageCreated, Command
-
 
 # ========================================
 # LOGGING
@@ -41,7 +43,6 @@ dp = Dispatcher()
 async def is_subscribed(user_id: int) -> bool:
     """
     TODO: Реализовать реальную проверку подписки
-    Когда получите CHANNEL_ID от клиента
     """
     logger.warning("⚠️ Проверка подписки отключена (тестовый режим)")
     return True
@@ -91,35 +92,18 @@ async def download_video(url: str, filename: str) -> str:
 def convert_to_circle(input_path: str, output_path: str):
     """
     Конвертация видео в кружочек (круглое видео)
-    
-    Параметры:
-    - Квадратное разрешение 480x480
-    - Обрезка по центру до квадрата
-    - Копирование аудио без пережатия
     """
     logger.info(f"🔄 Конвертирую в кружочек...")
     
     command = [
         "ffmpeg",
         "-i", input_path,
-        
-        # Видео фильтры:
-        # 1. Обрезка до квадрата (по центру)
-        # 2. Масштабирование до 480x480
         "-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=480:480",
-        
-        # Аудио: копируем без изменений
         "-c:a", "copy",
-        
-        # Видео кодек
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "23",
-        
-        # Ограничение по длительности (60 секунд максимум)
-        "-t", "60",
-        
-        # Перезаписать выходной файл если существует
+        "-t", "60",  # Максимум 60 секунд
         "-y",
         output_path
     ]
@@ -140,26 +124,29 @@ def convert_to_circle(input_path: str, output_path: str):
 
 
 # ========================================
-# UPLOAD VIDEO TO MAX
+# UPLOAD VIDEO TO MAX (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 # ========================================
 async def upload_video_to_max(filepath: str):
+    """
+    Загрузка видео на серверы MAX (правильный способ)
+    """
     logger.info(f"📤 Загружаю на MAX...")
     
     try:
-        # Вариант 1: Попробуйте InputMedia
-        try:
-            from maxapi import InputMedia
-            media = InputMedia(path=filepath)
-        except ImportError:
-            # Вариант 2: Просто передайте path как dict
-            media = {"path": filepath}
+        # Используем правильный метод библиотеки
+        from maxapi.types import InputMedia
         
-        attachment = await bot.upload_media(media)
-        logger.info(f"✅ Видео загружено")
-        return attachment
+        # Создаём InputMedia объект
+        media = InputMedia(path=filepath, type=UploadType.VIDEO)
+        
+        logger.info(f"✅ InputMedia создан")
+        
+        # InputMedia автоматически загружает файл и создаёт attachment
+        # Возвращаем его напрямую для использования в send_message
+        return media
         
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка загрузки: {e}", exc_info=True)
         raise
 
 
@@ -222,14 +209,14 @@ async def handle_message(event: MessageCreated):
     """Обработчик всех сообщений с видео"""
     user_id, user_name = get_user_info(event)
 
-    # 🔒 Проверка подписки ДО обработки
+    # 🔒 Проверка подписки
     if not await is_subscribed(user_id):
         await event.message.answer(
             f"❌ Подпишись на канал:\n{CHANNEL_LINK}\n\nПотом нажми /start"
         )
         return
 
-    # Проверяем наличие вложений
+    # Проверяем вложения
     attachments = event.message.body.attachments or []
 
     if not attachments:
@@ -238,76 +225,69 @@ async def handle_message(event: MessageCreated):
         )
         return
 
-    # Ищем видео во вложениях
+    # Ищем видео
     for attachment in attachments:
         att_type = getattr(attachment, "type", None)
 
         if att_type == "video":
-            logger.info(f"📹 Получено видео от {user_name} (ID: {user_id})")
-            await event.message.answer("⏳ Обрабатываю видео, подожди немного...")
+            logger.info(f"📹 Видео от {user_name} (ID: {user_id})")
+            await event.message.answer("⏳ Обрабатываю видео...")
 
             file_id = str(uuid.uuid4())
             input_path = None
             output_path = None
 
             try:
-                # 1. Получаем URL видео
+                # 1. Скачиваем
                 video_url = attachment.payload.url
-
-                # 2. Скачиваем видео
-                input_path = await download_video(
-                    video_url, 
-                    f"{file_id}_input.mp4"
-                )
+                input_path = await download_video(video_url, f"{file_id}_input.mp4")
                 
-                await event.message.answer("✅ Скачано! Конвертирую в кружочек...")
+                await event.message.answer("✅ Скачано! Конвертирую...")
 
-                # 3. Конвертируем в кружочек
+                # 2. Конвертируем
                 output_path = f"videos/{file_id}_circle.mp4"
                 convert_to_circle(input_path, output_path)
                 
-                await event.message.answer("✅ Готово! Загружаю на MAX...")
+                await event.message.answer("✅ Готово! Загружаю...")
 
-                # 4. Загружаем на MAX и получаем attachment
-                circle_attachment = await upload_video_to_max(output_path)
+                # 3. Создаём InputMedia и отправляем
+                from maxapi.types import InputMedia
+                media = InputMedia(path=output_path, type=UploadType.VIDEO)
                 
-                # 5. Отправляем пользователю
+                # 4. Отправляем (используем answer вместо send_message)
                 await event.message.answer(
-                    "🎉 Вот твой кружочек!",
-                    attachments=[circle_attachment]
+                    text="🎉 Вот твой кружочек!",
+                    attachments=[media]
                 )
                 
-                logger.info(f"✅ Кружочек отправлен: {user_name} (ID: {user_id})")
+                logger.info(f"✅ Успех! {user_name} (ID: {user_id})")
 
             except Exception as e:
-                logger.error(f"❌ Ошибка обработки: {e}", exc_info=True)
+                logger.error(f"❌ Ошибка: {e}", exc_info=True)
                 await event.message.answer(
-                    "❌ Произошла ошибка при обработке видео.\n\n"
-                    "Возможные причины:\n"
-                    "• Слишком длинное видео (макс 60 сек)\n"
-                    "• Слишком большой размер (макс 50 МБ)\n"
-                    "• Неподдерживаемый формат\n\n"
-                    "Попробуйте другое видео!"
+                    "❌ Ошибка обработки видео.\n\n"
+                    "Попробуйте:\n"
+                    "• Более короткое видео (до 60 сек)\n"
+                    "• Меньший размер (до 50 МБ)\n"
+                    "• Другой формат (MP4, MOV, AVI)"
                 )
 
             finally:
-                # 6. Очищаем временные файлы
+                # Очистка
                 try:
                     if input_path and os.path.exists(input_path):
                         os.remove(input_path)
-                        logger.info(f"🗑️ Удален: {input_path}")
                     if output_path and os.path.exists(output_path):
                         os.remove(output_path)
-                        logger.info(f"🗑️ Удален: {output_path}")
-                except Exception as cleanup_err:
-                    logger.warning(f"⚠️ Не удалось удалить файлы: {cleanup_err}")
+                    logger.info(f"🗑️ Файлы удалены")
+                except:
+                    pass
 
-            return  # Обработали видео, выходим
+            return
 
-    # Если не нашли видео
     await event.message.answer(
-        "❌ Отправь именно видео-файл!\n"
-        "Поддерживаемые форматы: MP4, MOV, AVI"
+        "❌ Отправь видео-файл!\n"
+        "Форматы: MP4, MOV, AVI"
     )
 
 
@@ -315,30 +295,27 @@ async def handle_message(event: MessageCreated):
 # START BOT
 # ========================================
 async def main():
-    """Главная функция запуска бота"""
+    """Главная функция"""
     logger.info("=" * 60)
-    logger.info("🤖 БОТ 'КРУЖОЧЕК ДЛЯ ВИДЕО' ЗАПУСКАЕТСЯ")
+    logger.info("🤖 БОТ 'КРУЖОЧЕК ДЛЯ ВИДЕО'")
     logger.info("=" * 60)
 
-    # Удаляем webhook если был установлен
     try:
         await bot.delete_webhook()
         logger.info("✅ Webhook удален")
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось удалить webhook: {e}")
+    except:
+        pass
 
-    # Получаем информацию о боте
     try:
         me = await bot.get_me()
-        logger.info(f"✅ Бот авторизован: @{me.username}")
+        logger.info(f"✅ Бот: @{me.username}")
         logger.info(f"   ID: {me.user_id}")
         logger.info(f"   Имя: {me.first_name}")
     except Exception as e:
-        logger.error(f"❌ Ошибка получения информации о боте: {e}")
+        logger.error(f"❌ Ошибка: {e}")
 
-    # Запускаем polling
     logger.info("🔄 Запуск polling...")
-    logger.info("✅ Бот готов принимать видео!")
+    logger.info("✅ Готов к работе!")
     logger.info("=" * 60)
     
     await dp.start_polling(bot)
@@ -348,8 +325,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("\n" + "=" * 60)
-        logger.info("👋 Бот остановлен пользователем (Ctrl+C)")
-        logger.info("=" * 60)
+        logger.info("\n👋 Остановлен")
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
