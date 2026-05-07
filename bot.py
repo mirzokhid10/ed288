@@ -44,7 +44,7 @@ async def is_subscribed(user_id: int) -> bool:
     """Проверка подписки пользователя на канал через API"""
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": BOT_TOKEN}
+            headers = {"Authorization": f"{BOT_TOKEN}"}
             url = f"https://platform-api.max.ru/chats/{CHANNEL_ID}/members"
             async with session.get(url, headers=headers) as resp:
                 if resp.status != 200:
@@ -112,20 +112,21 @@ def convert_to_circle(input_path: str, output_path: str):
     command = [
         "ffmpeg",
         "-i", input_path,
+        "-i", "bg/space_bg.png",
         "-filter_complex",
         (
+            "[1:v]scale=480:480[bg];"
             "[0:v]"
             "crop='min(iw,ih)':'min(iw,ih)',"
-            "scale=400:400,"                    # Меньше круг
+            "scale=480:480,"
             "format=yuva420p,"
             "geq="
             "lum='p(X,Y)':"
             "cb='cb(X,Y)':"
             "cr='cr(X,Y)':"
-            "a='if(lt(sqrt((X-200)^2+(Y-200)^2),200),255,0)'"  # Радиус 200
+            "a='if(lt(sqrt((X-200)^2+(Y-200)^2),200),255,0)'"
             "[circle];"
-            "color=black:size=480x480:rate=30[bg];"             # Больше чёрного поля
-            "[bg][circle]overlay=x=40:y=40"                    # Центрируем
+            "[bg][circle]overlay=x=40:y=40"
         ),
         "-map", "0:a?",
         "-c:v", "libx264",
@@ -133,11 +134,13 @@ def convert_to_circle(input_path: str, output_path: str):
         "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
+        "-b:a", "128k",
+        "-aspect", "1:1",           # ← принудительно квадратное
+        "-movflags", "+faststart",  # ← оптимизация для стриминга
         "-t", "60",
         "-y",
         output_path
     ]
-    logger.info(f"🎬 FFmpeg command: {' '.join(command)}")
 
     result = subprocess.run(
         command,
@@ -145,8 +148,6 @@ def convert_to_circle(input_path: str, output_path: str):
         stderr=subprocess.PIPE,
         text=True
     )
-    logger.info(f"🎬 FFmpeg command: {' '.join(command)}")
-
 
     if result.returncode != 0:
         logger.error(f"❌ FFmpeg stderr:\n{result.stderr}")
@@ -304,6 +305,7 @@ async def handle_message(event: MessageCreated):
 
                 # 2. Конвертируем
                 output_path = f"videos/{file_id}_circle.mp4"
+
                 
                 convert_to_circle(input_path, output_path)
                 
@@ -311,18 +313,20 @@ async def handle_message(event: MessageCreated):
 
                 # 3. Получаем URL для загрузки
                 upload_info = await bot.get_upload_url(type=UploadType.VIDEO)
+                
+
                 logger.info(f"📦 upload_info: {upload_info.__dict__}")
+
                 
                 # 4. Загружаем файл
-                await bot.upload_file(
-                    url=upload_info.url,
-                    path=output_path,
-                    type=UploadType.VIDEO
-                )
+                await bot.upload_file(url=upload_info.url, path=output_path, type=UploadType.VIDEO)
+
                 logger.info(f"✅ Файл загружен")
 
                 # 5. Создаём attachment
                 token = upload_info.token
+
+
                 logger.info(f"🔑 Token: {token}")
                 
                 if not token:
@@ -330,6 +334,7 @@ async def handle_message(event: MessageCreated):
                 
                 # 6. Отправляем
                 from maxapi.types.attachments.upload import AttachmentUpload, AttachmentPayload
+
 
                 circle_attachment = AttachmentUpload(
                     type=UploadType.VIDEO,
