@@ -8,6 +8,13 @@ import aiofiles
 import json
 from maxapi.enums.upload_type import UploadType
 
+from maxapi.types.attachments.buttons import CallbackButton, LinkButton
+from maxapi.types.attachments import AttachmentButton
+from maxapi.types.attachments.attachment import ButtonsPayload
+from maxapi.types import MessageCallback
+from maxapi.enums.attachment import AttachmentType
+
+
 
 from dotenv import load_dotenv
 from maxapi import Bot, Dispatcher
@@ -38,26 +45,86 @@ bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
 # ========================================
-# SUBSCRIPTION CHECK (TEMP)
+# IN-MEMORY SUBSCRIPTION TRACKING
 # ========================================
+subscribed_users = set()
+
+# ========================================
+# SUBSCRIPTION CHECK (IMPROVED)
+# ========================================
+
+def get_subscribe_keyboard():
+    return AttachmentButton(
+        type=AttachmentType.INLINE_KEYBOARD,
+        payload=ButtonsPayload(
+            buttons=[
+                [LinkButton(text="📢 Подписаться на канал", url=CHANNEL_LINK)],
+                [CallbackButton(text="✅ Готово", payload="check_subscription")]
+            ]
+        )
+    )
+
 async def is_subscribed(user_id: int) -> bool:
-    """Проверка подписки пользователя на канал через API"""
+    """Проверка подписки пользователя на канал через API с пагинацией"""
+    
+    # Сначала проверяем in-memory кэш
+    if user_id in subscribed_users:
+        logger.info(f"✅ User {user_id} found in cache")
+        return True
+    
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"{BOT_TOKEN}"}
-            url = f"https://platform-api.max.ru/chats/{CHANNEL_ID}/members"
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    logger.error(f"❌ Members API error: {resp.status}")
-                    return False
-                data = await resp.json()
-                members = data.get("members", [])
-                is_member = any(m["user_id"] == user_id for m in members)
-                logger.info(f"🔍 User {user_id} subscribed: {is_member}")
-                return is_member
+            headers = {"Authorization": BOT_TOKEN}
+            
+            # Пробуем с пагинацией
+            offset = 0
+            limit = 100
+            total_checked = 0
+            
+            while True:
+                url = f"https://platform-api.max.ru/chats/{CHANNEL_ID}/members?offset={offset}&limit={limit}"
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        logger.error(f"❌ Members API error: {resp.status}")
+                        # В случае ошибки API - разрешаем доступ (fail-open)
+                        return True
+                    
+                    data = await resp.json()
+                    members = data.get("members", [])
+                    
+                    if not members:
+                        break
+                    
+                    total_checked += len(members)
+                    logger.info(f"📋 Fetched {len(members)} members (offset: {offset}, total: {total_checked})")
+                    
+                    # Проверяем, есть ли пользователь в этой партии
+                    for member in members:
+                        member_id = member.get("user_id")
+                        if member_id == user_id:
+                            logger.info(f"✅ User {user_id} IS subscribed (found at offset {offset})")
+                            subscribed_users.add(user_id)  # Добавляем в кэш
+                            return True
+                    
+                    # Если получили меньше limit, значит это последняя страница
+                    if len(members) < limit:
+                        logger.info(f"📄 Last page reached (got {len(members)} < {limit})")
+                        break
+                    
+                    offset += limit
+                    
+                    # Защита от бесконечного цикла
+                    if offset > 10000:
+                        logger.warning(f"⚠️ Stopped pagination at offset {offset}")
+                        break
+            
+            logger.info(f"❌ User {user_id} is NOT subscribed (checked {total_checked} members)")
+            return False
+            
     except Exception as e:
-        logger.error(f"❌ Ошибка проверки подписки: {e}")
-        return False
+        logger.error(f"❌ Ошибка проверки подписки: {e}", exc_info=True)
+        # В случае ошибки - разрешаем доступ (fail-open)
+        return True
 
 # ========================================
 # USER INFO
@@ -186,19 +253,14 @@ async def upload_video_to_max(filepath: str):
 
 @dp.bot_started()
 async def bot_started_handler(event: BotStarted):
-    """Обработчик нажатия кнопки 'Начать'"""
     user_id, user_name = get_user_info(event)
     logger.info(f"👤 Новый пользователь: {user_name} (ID: {user_id})")
 
     if not await is_subscribed(user_id):
         await event.bot.send_message(
             chat_id=event.chat_id,
-            text=(
-                f"Привет, {user_name}! 👋\n\n"
-                "❌ Для использования бота подпишись на канал:\n"
-                f"👉 {CHANNEL_LINK}\n\n"
-                "После подписки нажми /start"
-            )
+            text=f"Привет, {user_name}! 👋\n\nДля использования бота подпишись на канал 👇",
+            attachments=[get_subscribe_keyboard()]
         )
         return
 
@@ -218,13 +280,13 @@ async def bot_started_handler(event: BotStarted):
 
 @dp.message_created(Command("start"))
 async def start_handler(event: MessageCreated):
-    """Обработчик команды /start"""
     user_id, user_name = get_user_info(event)
     logger.info(f"⚡ /start от {user_name} (ID: {user_id})")
 
     if not await is_subscribed(user_id):
         await event.message.answer(
-            f"❌ Подпишись на канал:\n{CHANNEL_LINK}\n\nПотом нажми /start снова"
+            text="❌ Для использования бота подпишись на канал 👇",
+            attachments=[get_subscribe_keyboard()]
         )
         return
 
@@ -232,6 +294,72 @@ async def start_handler(event: MessageCreated):
         "✅ Готово к работе!\n\n"
         "📹 Отправь мне видео 🎥"
     )
+
+
+# ========================================
+# НОВЫЙ ОБРАБОТЧИК: ОТСЛЕЖИВАНИЕ ПОДПИСОК
+# ========================================
+@dp.user_added()
+async def user_added_handler(event):
+    """Обработчик события добавления пользователя в канал"""
+    try:
+        # Проверяем, что это наш канал
+        if hasattr(event, 'chat_id') and event.chat_id == CHANNEL_ID:
+            if hasattr(event, 'user_id'):
+                user_id = event.user_id
+                subscribed_users.add(user_id)
+                logger.info(f"✅ User {user_id} подписался на канал (event: user_added)")
+            elif hasattr(event, 'user') and hasattr(event.user, 'user_id'):
+                user_id = event.user.user_id
+                subscribed_users.add(user_id)
+                logger.info(f"✅ User {user_id} подписался на канал (event: user_added)")
+    except Exception as e:
+        logger.error(f"❌ Ошибка в user_added_handler: {e}", exc_info=True)
+
+
+@dp.user_removed()
+async def user_removed_handler(event):
+    """Обработчик события удаления пользователя из канала"""
+    try:
+        # Проверяем, что это наш канал
+        if hasattr(event, 'chat_id') and event.chat_id == CHANNEL_ID:
+            if hasattr(event, 'user_id'):
+                user_id = event.user_id
+                subscribed_users.discard(user_id)
+                logger.info(f"❌ User {user_id} отписался от канала (event: user_removed)")
+            elif hasattr(event, 'user') and hasattr(event.user, 'user_id'):
+                user_id = event.user.user_id
+                subscribed_users.discard(user_id)
+                logger.info(f"❌ User {user_id} отписался от канала (event: user_removed)")
+    except Exception as e:
+        logger.error(f"❌ Ошибка в user_removed_handler: {e}", exc_info=True)
+
+    
+@dp.message_callback()
+async def handle_callback(event: MessageCallback):
+    user_id = event.callback.user.user_id
+    user_name = getattr(event.callback.user, 'first_name', None) or "пользователь"
+    chat_id = event.message.recipient.chat_id
+
+    if event.callback.payload == "check_subscription":
+        if await is_subscribed(user_id):
+            await event.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "✅ Подписка подтверждена!\n\n"
+                    "📹 Отправь мне видео, и я превращу его в кружочек\n\n"
+                    "⚙️ Требования:\n"
+                    "• Длительность: до 60 секунд\n"
+                    "• Форматы: MP4, MOV, AVI\n"
+                    "• Размер: до 50 МБ"
+                )
+            )
+        else:
+            await event.bot.send_message(
+                chat_id=chat_id,
+                text="❌ Ты ещё не подписан. Подпишись и нажми кнопку снова!",
+                attachments=[get_subscribe_keyboard()]
+            )
 
 
 @dp.message_created()
@@ -246,7 +374,8 @@ async def handle_message(event: MessageCreated):
     # 🔒 Проверка подписки
     if not await is_subscribed(user_id):
         await event.message.answer(
-            f"❌ Подпишись на канал:\n{CHANNEL_LINK}\n\nПотом нажми /start"
+            text="❌ Для использования бота подпишись на канал 👇",
+            attachments=[get_subscribe_keyboard()]
         )
         return
 
@@ -397,9 +526,12 @@ async def main():
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
 
-    logger.info("🔄 Запуск polling...")
-    logger.info("✅ Готов к работе!")
-    logger.info("=" * 60)
+
+    async with aiohttp.ClientSession() as session:
+        headers = {"Authorization": BOT_TOKEN}
+        async with session.get("https://platform-api.max.ru/chats", headers=headers) as resp:
+            data = await resp.json()
+            logger.info(f"📢 ALL CHATS: {json.dumps(data, ensure_ascii=False, indent=2)}")
     
     await dp.start_polling(bot)
 
