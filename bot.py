@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://max.ru/")
 
 if not BOT_TOKEN:
@@ -41,24 +41,40 @@ dp = Dispatcher()
 # SUBSCRIPTION CHECK (TEMP)
 # ========================================
 async def is_subscribed(user_id: int) -> bool:
-    """
-    TODO: Реализовать реальную проверку подписки
-    """
-    logger.warning("⚠️ Проверка подписки отключена (тестовый режим)")
-    return True
-
+    """Проверка подписки пользователя на канал через API"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {"Authorization": BOT_TOKEN}
+            url = f"https://platform-api.max.ru/chats/{CHANNEL_ID}/members"
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    logger.error(f"❌ Members API error: {resp.status}")
+                    return False
+                data = await resp.json()
+                members = data.get("members", [])
+                is_member = any(m["user_id"] == user_id for m in members)
+                logger.info(f"🔍 User {user_id} subscribed: {is_member}")
+                return is_member
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки подписки: {e}")
+        return False
 
 # ========================================
 # USER INFO
 # ========================================
+
 def get_user_info(event):
+    
     """Универсальная функция получения информации о пользователе"""
-    if hasattr(event, "user"):
-        return event.user.user_id, event.user.name or "пользователь"
+    if hasattr(event, "user") and event.user:
+        name = getattr(event.user, 'first_name', None) or getattr(event.user, 'name', None) or "пользователь"
+        return event.user.user_id, name
 
     if hasattr(event, "message") and hasattr(event.message, "sender"):
         sender = event.message.sender
-        return sender.user_id, sender.first_name or "пользователь"
+        if sender:
+            name = getattr(sender, 'first_name', None) or getattr(sender, 'name', None) or "пользователь"
+            return sender.user_id, name
 
     raise Exception("Не удалось получить информацию о пользователе")
 
@@ -220,6 +236,10 @@ async def start_handler(event: MessageCreated):
 @dp.message_created()
 async def handle_message(event: MessageCreated):
     """Обработчик всех сообщений с видео"""
+    # Игнорируем сообщения из каналов (нет sender)
+    if not event.message.sender:
+        return
+    
     user_id, user_name = get_user_info(event)
 
     # 🔒 Проверка подписки
@@ -242,11 +262,6 @@ async def handle_message(event: MessageCreated):
             "📹 Отправь мне видео для конвертации в кружочек!"
         )
         return
-
-    # 🔍 DEBUG: Анализируем вложения
-    logger.info("=" * 60)
-    logger.info(f"🔍 АНАЛИЗ ВЛОЖЕНИЙ")
-    logger.info("=" * 60)
     
     for i, att in enumerate(attachments):
         logger.info(f"\n📎 Вложение #{i + 1}:")
