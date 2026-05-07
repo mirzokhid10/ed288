@@ -91,9 +91,6 @@ async def download_video(url: str, filename: str) -> str:
 # ========================================
 
 def convert_to_circle(input_path: str, output_path: str):
-    """
-    Конвертация видео в визуальный кружочек (MP4 + чёрный фон)
-    """
     logger.info(f"🔄 Создаю кружочек...")
 
     command = [
@@ -101,23 +98,20 @@ def convert_to_circle(input_path: str, output_path: str):
         "-i", input_path,
         "-filter_complex",
         (
-            # Шаг 1: Кроп + ресайз + альфа-маска
             "[0:v]"
             "crop='min(iw,ih)':'min(iw,ih)',"
-            "scale=480:480,"
+            "scale=400:400,"                    # Меньше круг
             "format=yuva420p,"
             "geq="
             "lum='p(X,Y)':"
             "cb='cb(X,Y)':"
             "cr='cr(X,Y)':"
-            "a='if(lt(sqrt((X-240)^2+(Y-240)^2),240),255,0)'"
+            "a='if(lt(sqrt((X-200)^2+(Y-200)^2),200),255,0)'"  # Радиус 200
             "[circle];"
-            # Шаг 2: Чёрный фон 480x480
-            "color=black:size=480x480:rate=30[bg];"
-            # Шаг 3: Накладываем кружок на фон
-            "[bg][circle]overlay"
+            "color=black:size=480x480:rate=30[bg];"             # Больше чёрного поля
+            "[bg][circle]overlay=x=40:y=40"                    # Центрируем
         ),
-        "-map", "0:a?",         # Аудио из оригинала (если есть)
+        "-map", "0:a?",
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "23",
@@ -127,6 +121,7 @@ def convert_to_circle(input_path: str, output_path: str):
         "-y",
         output_path
     ]
+    logger.info(f"🎬 FFmpeg command: {' '.join(command)}")
 
     result = subprocess.run(
         command,
@@ -134,6 +129,8 @@ def convert_to_circle(input_path: str, output_path: str):
         stderr=subprocess.PIPE,
         text=True
     )
+    logger.info(f"🎬 FFmpeg command: {' '.join(command)}")
+
 
     if result.returncode != 0:
         logger.error(f"❌ FFmpeg stderr:\n{result.stderr}")
@@ -292,13 +289,14 @@ async def handle_message(event: MessageCreated):
 
                 # 2. Конвертируем
                 output_path = f"videos/{file_id}_circle.mp4"
+                
                 convert_to_circle(input_path, output_path)
                 
                 await event.message.answer("✅ Готово! Загружаю...")
 
                 # 3. Получаем URL для загрузки
                 upload_info = await bot.get_upload_url(type=UploadType.VIDEO)
-                logger.info(f"✅ Upload URL получен")
+                logger.info(f"📦 upload_info: {upload_info.__dict__}")
                 
                 # 4. Загружаем файл
                 await bot.upload_file(
@@ -307,22 +305,26 @@ async def handle_message(event: MessageCreated):
                     type=UploadType.VIDEO
                 )
                 logger.info(f"✅ Файл загружен")
+
+                # 5. Создаём attachment
+                token = upload_info.token
+                logger.info(f"🔑 Token: {token}")
                 
-                # 5. Создаём attachment с токеном
-                from maxapi.types.attachments.upload import AttachmentUpload, AttachmentPayload
-                
-                circle_attachment = AttachmentUpload(
-                    type=UploadType.VIDEO,
-                    payload=AttachmentPayload(token=upload_info.token)
-                )
+                if not token:
+                    raise Exception("Токен не найден")
                 
                 # 6. Отправляем
+                from maxapi.types.attachments.upload import AttachmentUpload, AttachmentPayload
+
+                circle_attachment = AttachmentUpload(
+                    type=UploadType.VIDEO,
+                    payload=AttachmentPayload(token=token)
+                )
+
                 await event.message.answer(
                     text="🎉 Вот твой кружочек!",
                     attachments=[circle_attachment]
                 )
-                
-                logger.info(f"✅ Успех! {user_name} (ID: {user_id})")
 
             except Exception as e:
                 logger.error(f"❌ Ошибка: {e}", exc_info=True)
