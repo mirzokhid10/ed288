@@ -7,6 +7,7 @@ import uuid
 import aiofiles
 import aiomysql
 from datetime import datetime
+import json
 from maxapi.enums.upload_type import UploadType
 
 from maxapi.types.attachments.buttons import CallbackButton, LinkButton
@@ -200,64 +201,73 @@ async def populate_initial_members():
         async with aiohttp.ClientSession() as session:
             headers = {"Authorization": BOT_TOKEN}
             
-            # Пробуем оба варианта ID
-            channel_ids = [CHANNEL_ID, -abs(CHANNEL_ID)]
+            marker = None  # Начинаем с первой страницы
+            total_added = 0
+            page = 1
+            count = 100  # Максимум участников за запрос
             
-            for channel_id in channel_ids:
-                offset = 0
-                limit = 100
-                total_added = 0
+            while True:
+                # Формируем URL с marker (если есть)
+                if marker:
+                    url = f"https://platform-api.max.ru/chats/{CHANNEL_ID}/members?count={count}&marker={marker}"
+                else:
+                    url = f"https://platform-api.max.ru/chats/{CHANNEL_ID}/members?count={count}"
                 
-                while offset < 50000:  # Safety limit
-                    url = f"https://platform-api.max.ru/chats/{channel_id}/members?offset={offset}&limit={limit}"
-                    
-                    try:
-                        async with session.get(url, headers=headers) as resp:
-                            if resp.status != 200:
-                                logger.warning(f"⚠️ API status {resp.status} for channel_id={channel_id}")
-                                break
+                try:
+                    async with session.get(url, headers=headers) as resp:
+                        logger.info(f"📡 API Request (page {page}): marker={marker}, count={count}, status={resp.status}")
+                        
+                        if resp.status != 200:
+                            logger.error(f"❌ API error: status={resp.status}")
+                            break
+                        
+                        data = await resp.json()
+                        members = data.get("members", [])
+                        new_marker = data.get("marker")  # Получаем marker для следующей страницы
+                        
+                        logger.info(f"📋 Page {page}: received {len(members)} members, next marker={new_marker}")
+                        
+                        if not members:
+                            logger.info("✅ No more members")
+                            break
+                        
+                        # Добавляем в базу
+                        batch_added = 0
+                        for member in members:
+                            user_id = member.get("user_id")
+                            first_name = member.get("first_name", "Unknown")
                             
-                            data = await resp.json()
-                            members = data.get("members", [])
-                            
-                            if not members:
-                                logger.info(f"📄 No more members at offset {offset}")
-                                break
-                            
-                            # Добавляем в базу
-                            for member in members:
-                                user_id = member.get("user_id")
-                                first_name = member.get("first_name", "Unknown")
-                                
-                                if user_id:
-                                    if await add_subscriber_to_db(user_id, first_name):
-                                        total_added += 1
-                            
-                            logger.info(f"📋 Processed {len(members)} members (offset: {offset}, total added: {total_added})")
-                            
-                            # Если получили меньше limit, это последняя страница
-                            if len(members) < limit:
-                                logger.info(f"✅ Initial population complete: {total_added} members added")
-                                return total_added
-                            
-                            offset += limit
-                            
-                            # Небольшая задержка между запросами
-                            await asyncio.sleep(0.5)
-                            
-                    except Exception as e:
-                        logger.error(f"❌ Error fetching members at offset {offset}: {e}")
-                        break
-                
-                # Если успешно получили данные с этим channel_id, не пробуем другой
-                if total_added > 0:
-                    return total_added
-        
-        logger.warning("⚠️ No members found with either channel_id")
-        return 0
-        
+                            if user_id:
+                                if await add_subscriber_to_db(user_id, first_name):
+                                    batch_added += 1
+                                    total_added += 1
+                        
+                        logger.info(f"✅ Page {page} complete: {batch_added}/{len(members)} new members added (total: {total_added})")
+                        
+                        # Если нет marker - это последняя страница
+                        if not new_marker:
+                            logger.info("✅ Reached last page (no marker)")
+                            break
+                        
+                        # Переходим к следующей странице
+                        marker = new_marker
+                        page += 1
+                        
+                        # Небольшая задержка между запросами
+                        await asyncio.sleep(0.3)
+                        
+                except aiohttp.ClientError as e:
+                    logger.error(f"❌ Network error on page {page}: {e}")
+                    break
+                except Exception as e:
+                    logger.error(f"❌ Error processing page {page}: {e}", exc_info=True)
+                    break
+            
+            logger.info(f"✅ Initial population complete: {total_added} members added from {page} pages")
+            return total_added
+            
     except Exception as e:
-        logger.error(f"❌ Error in initial population: {e}", exc_info=True)
+        logger.error(f"❌ Fatal error in initial population: {e}", exc_info=True)
         return 0
 
 # ========================================
@@ -267,7 +277,6 @@ async def populate_initial_members():
 async def sync_members_task():
     """
     Фоновая задача: синхронизация базы данных с API каждые 6 часов
-    Это подстраховка на случай пропущенных событий
     """
     while True:
         try:
@@ -280,50 +289,51 @@ async def sync_members_task():
             
             async with aiohttp.ClientSession() as session:
                 headers = {"Authorization": BOT_TOKEN}
-                channel_ids = [CHANNEL_ID, -abs(CHANNEL_ID)]
+                marker = None
+                count = 100
                 
-                for channel_id in channel_ids:
-                    offset = 0
-                    limit = 100
+                while True:
+                    if marker:
+                        url = f"https://platform-api.max.ru/chats/{CHANNEL_ID}/members?count={count}&marker={marker}"
+                    else:
+                        url = f"https://platform-api.max.ru/chats/{CHANNEL_ID}/members?count={count}"
                     
-                    while offset < 50000:
-                        url = f"https://platform-api.max.ru/chats/{channel_id}/members?offset={offset}&limit={limit}"
-                        
-                        try:
-                            async with session.get(url, headers=headers) as resp:
-                                if resp.status != 200:
-                                    break
-                                
-                                data = await resp.json()
-                                members = data.get("members", [])
-                                
-                                if not members:
-                                    break
-                                
-                                for member in members:
-                                    user_id = member.get("user_id")
-                                    if user_id:
-                                        api_members.add(user_id)
-                                
-                                if len(members) < limit:
-                                    break
-                                
-                                offset += limit
-                                await asyncio.sleep(0.5)
-                                
-                        except Exception as e:
-                            logger.error(f"❌ Sync error at offset {offset}: {e}")
-                            break
-                    
-                    if len(api_members) > 0:
+                    try:
+                        async with session.get(url, headers=headers) as resp:
+                            if resp.status != 200:
+                                logger.warning(f"⚠️ Sync API status {resp.status}")
+                                break
+                            
+                            data = await resp.json()
+                            members = data.get("members", [])
+                            new_marker = data.get("marker")
+                            
+                            if not members:
+                                break
+                            
+                            for member in members:
+                                user_id = member.get("user_id")
+                                if user_id:
+                                    api_members.add(user_id)
+                            
+                            logger.info(f"📋 Sync: processed {len(members)} members (total: {len(api_members)})")
+                            
+                            if not new_marker:
+                                break
+                            
+                            marker = new_marker
+                            await asyncio.sleep(0.3)
+                            
+                    except Exception as e:
+                        logger.error(f"❌ Sync error: {e}")
                         break
             
             # Получаем подписчиков из базы
             db_members = await get_all_subscribers_from_db()
             
             # Находим разницу
-            to_add = api_members - db_members  # В API есть, в БД нет
-            to_remove = db_members - api_members  # В БД есть, в API нет
+            to_add = api_members - db_members
+            to_remove = db_members - api_members
             
             # Синхронизируем
             added = 0
@@ -341,8 +351,6 @@ async def sync_members_task():
             
         except Exception as e:
             logger.error(f"❌ Error in sync task: {e}", exc_info=True)
-            # Продолжаем работу даже при ошибке
-
 
 # ========================================
 # SUBSCRIPTION CHECK
@@ -384,10 +392,10 @@ def get_user_info(event):
 
     raise Exception("Не удалось получить информацию о пользователе")
 
-
 # ========================================
 # DOWNLOAD VIDEO
 # ========================================
+
 async def download_video(url: str, filename: str) -> str:
     """Скачивание видео по URL"""
     os.makedirs("videos", exist_ok=True)
@@ -406,7 +414,6 @@ async def download_video(url: str, filename: str) -> str:
     file_size = os.path.getsize(filepath) / (1024 * 1024)  # MB
     logger.info(f"✅ Видео скачано ({file_size:.2f} MB)")
     return filepath
-
 
 # ========================================
 # CONVERT TO CIRCLE
@@ -491,7 +498,6 @@ async def bot_started_handler(event: BotStarted):
         )
     )
 
-
 @dp.message_created(Command("start"))
 async def start_handler(event: MessageCreated):
     user_id, user_name = get_user_info(event)
@@ -508,7 +514,6 @@ async def start_handler(event: MessageCreated):
         "✅ Готово к работе!\n\n"
         "📹 Отправь мне видео 🎥"
     )
-
 
 # ========================================
 # CHANNEL EVENT HANDLERS
@@ -697,6 +702,7 @@ async def handle_message(event: MessageCreated):
 # ========================================
 # START BOT
 # ========================================
+
 async def main():
     """Главная функция"""
     logger.info("=" * 60)
