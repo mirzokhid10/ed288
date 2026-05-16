@@ -889,7 +889,7 @@ async def main():
         logger.info("🚀 BOT IS RUNNING")
         logger.info("=" * 60)
 
-        # 7. Start polling
+        # 7. Start pollingg
         await dp.start_polling(bot)
 
     except Exception as e:
