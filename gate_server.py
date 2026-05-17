@@ -28,7 +28,7 @@ MYSQL_CONFIG = {
 }
 
 CHANNEL_LINK  = os.getenv("CHANNEL_LINK", "https://max.ru/")
-CHANNEL_NAME  = os.getenv("CHANNEL_NAME", "Егор Пыриков")
+CHANNEL_NAME  = os.getenv("CHANNEL_NAME", "Yulia Karetsman")
 POST_CONFIGS_FILE = "post_configs.json"
 
 # ========================================
@@ -129,6 +129,13 @@ def api_check_subscription():
         "redirect_url":  config['url'] if is_sub else None,
         "channel_link":  CHANNEL_LINK,
         "channel_name":  CHANNEL_NAME,
+    })
+    
+@app.route('/')
+def home():
+    return jsonify({
+        "status": "running",
+        "service": "subscription_gate"
     })
 
 
