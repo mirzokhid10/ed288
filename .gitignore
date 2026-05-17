@@ -2,4 +2,4 @@
 venv/
 
 # Sensitive data / API keys
-.env
+.envmax-sheet.json
