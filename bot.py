@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 # ========================================
 load_dotenv()
 
+print("MYSQL_URL =", os.getenv("MYSQL_URL"))
+print("MYSQL_HOST =", os.getenv("MYSQL_HOST"))
+print("MYSQL_USER =", os.getenv("MYSQL_USER"))
+
 BOT_TOKEN        = os.getenv("BOT_TOKEN")
 CHANNEL_ID       = int(os.getenv("CHANNEL_ID"))
 CHANNEL_LINK     = os.getenv("CHANNEL_LINK", "https://max.ru/")
@@ -51,11 +55,11 @@ ADMIN_IDS = (
 
 # MySQL — Railway public credentials
 MYSQL_CONFIG = {
-    'host':      os.getenv("MYSQL_HOST",     "localhost"),
-    'port':      int(os.getenv("MYSQL_PORT", 3306)),
-    'user':      os.getenv("MYSQL_USER",     "root"),
+    'host':      os.getenv("MYSQL_HOST", "yamanote.proxy.rlwy.net"),
+    'port':      int(os.getenv("MYSQL_PORT", 47768)),
+    'user':      os.getenv("MYSQL_USER", "root"),
     'password':  os.getenv("MYSQL_PASSWORD", ""),
-    'db':        os.getenv("MYSQL_DATABASE", "max_bot_db"),
+    'db':        os.getenv("MYSQL_DATABASE", "railway"),
     'charset':   'utf8mb4',
     'autocommit': True,
 }
@@ -90,11 +94,11 @@ async def init_db_pool():
     global db_pool
     try:
         db_pool = await aiomysql.create_pool(
-            host=MYSQL_CONFIG['host'],
-            port=MYSQL_CONFIG['port'],
-            user=MYSQL_CONFIG['user'],
-            password=MYSQL_CONFIG['password'],
-            db=MYSQL_CONFIG['db'],
+            host=os.getenv("MYSQL_HOST"),
+            port=int(os.getenv("MYSQL_PORT", 3306)),
+            user=os.getenv("MYSQL_USER"),
+            password=os.getenv("MYSQL_PASSWORD"),
+            db=os.getenv("MYSQL_DATABASE"),
             charset=MYSQL_CONFIG['charset'],
             autocommit=MYSQL_CONFIG['autocommit'],
             minsize=1,
@@ -486,9 +490,9 @@ async def post_handler(event: MessageCreated):
     logger.info(f"/post started by {user_name} ({user_id})")
 
     await event.message.answer(
-        "Sozdanie posta dlya kanala\n\n"
-        "Shag 1/3: Otpravte tekst posta.\n\n"
-        "Dlya otmeny: /cancel"
+        "Создание поста для канала\n\n"
+        "Шаг 1/3: Отправьте текст поста.\n\n"
+        "• Для отмены используйте /cancel"
     )
 
 # ========================================
@@ -631,9 +635,9 @@ async def handle_message(event: MessageCreated):
             state["step"] = PostStep.WAITING_BUTTON_LABEL
             logger.info(f"Post text received from {user_id}")
             await event.message.answer(
-                "Tekst posta sokhranyon!\n\n"
-                "Shag 2/3: Vvedite tekst knopki\n\n"
-                "Primer: ZABRAT INSTRUKTSIYU"
+                "✅ Текст поста сохранён!\n\n"
+                "Шаг 2/3: Введите текст для кнопки\n\n"
+                "Пример: '✅ ЗАБРАТЬ ИНСТРУКЦИЮ'"
             )
             return
 
@@ -645,9 +649,9 @@ async def handle_message(event: MessageCreated):
             state["step"]         = PostStep.WAITING_URL
             logger.info(f"Button label: {message_text}")
             await event.message.answer(
-                "Tekst knopki sokhranyon!\n\n"
-                "Shag 3/3: Vvedite URL dlya perekhoda\n\n"
-                "Primer: https://disk.yandex.ru/i/abc123"
+                "✅ Текст кнопки сохранён!\n\n"
+                "Шаг 3/3: Введите URL для перехода\n\n"
+                "Пример: https://disk.yandex.ru/i/1cS-6DUH_eTu0w"
             )
             return
 
@@ -664,7 +668,7 @@ async def handle_message(event: MessageCreated):
             post_id = secrets.token_hex(6)  # 12-char hex, safe for startapp payload
 
             try:
-                await event.message.answer("Publikuyu post v kanale...")
+                await event.message.answer("⏳ Публикую пост в канале...")
 
                 # Save to MySQL FIRST — so gate_server can find it immediately
                 saved = await save_post_config(post_id, url, state["button_label"])
@@ -692,11 +696,11 @@ async def handle_message(event: MessageCreated):
                 logger.info(f"Post published: {post_id}")
 
                 await event.message.answer(
-                    f"Post opublikovan v kanale!\n\n"
-                    f"ID: {post_id}\n"
-                    f"URL: {url}\n"
-                    f"Knopka: {state['button_label']}\n\n"
-                    f"Spisok postov: /listposts"
+                    f"✅ Пост опубликован в канале!\n\n"
+                    f"🔑 Post ID: {post_id}\n"
+                    f"🔗 Protected URL: {url}\n"
+                    f"🔘 Кнопка: {state['button_label']}\n\n"
+                    f"Используйте /listposts для просмотра всех постов"
                 )
 
             except Exception as e:
