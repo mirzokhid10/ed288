@@ -12,7 +12,7 @@ app = Flask(__name__)
 CORS(app)
 
 # ========================================
-# CONFIG — Railway MySQL public credentials
+# CONFIG — Railway MySQL public credentialss
 # ========================================
 MYSQL_CONFIG = {
     'host':     os.getenv("MYSQLHOST",     "localhost"),
